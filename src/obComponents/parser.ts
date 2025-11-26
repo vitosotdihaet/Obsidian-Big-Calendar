@@ -3,7 +3,7 @@
  * Provides high-performance parsing of lists, tasks, times, dates, and text content
  */
 
-import {moment} from 'obsidian';
+import {moment, Notice} from 'obsidian';
 import {BigCalendarSettings} from '@/setting';
 
 /**
@@ -81,7 +81,7 @@ export interface TimeInfo {
 export interface DateInfo {
   date: string; // YYYY-MM-DD format
   moment: moment.Moment;
-  type: 'due' | 'start' | 'scheduled' | 'done';
+  type: 'date';
   rawMatch?: string;
 }
 
@@ -114,6 +114,11 @@ export interface ParsedLine {
   listMarker: string;
 }
 
+export interface ListEntry {
+  header: string;
+  body: string;
+}
+
 /**
  * Regex patterns for parsing
  */
@@ -129,7 +134,8 @@ export const PATTERNS = {
   TIME_RANGE: /(\d{1,2}):(\d{2})(?::(\d{2}))?-(\d{1,2}):(\d{2})(?::(\d{2}))?/g,
 
   // Date patterns
-  DUE_DATE: /\s(📅|📆|(@{)|(\[due::))\s?(\d{4}-\d{2}-\d{2})(\])?/g,
+  DUE_DATE: /\s?@{(\d{4}-\d{2}-\d{2})}/g,
+  _DUE_DATE: /\s(📅|📆|(@{)|(\[due::))\s?(\d{4}-\d{2}-\d{2})(\])?/g,
   START_DATE: /🛫\s?(\d{4}-\d{2}-\d{2})/g,
   SCHEDULED_DATE: /[⏳⌛]\s?(\d{4}-\d{2}-\d{2})/g,
   DONE_DATE: /✅\s?(\d{4}-\d{2}-\d{2})/g,
@@ -138,90 +144,6 @@ export const PATTERNS = {
   RECURRENCE: /🔁([a-zA-Z0-9, !]+)$/,
   BLOCK_LINK: /\s\^([a-zA-Z0-9-]+)$/,
 };
-
-/**
- * Extracts start and end times from a line
- *
- * @param line The text line to parse
- * @returns Object containing start and end times if found
- */
-export function extractTimes(line: string): {startTime?: TimeInfo; endTime?: TimeInfo} {
-  const result: {startTime?: TimeInfo; endTime?: TimeInfo} = {};
-
-  // First, check for time range format (HH:MM-HH:MM)
-  const timeRangeMatches = [...line.matchAll(PATTERNS.TIME_RANGE)];
-  if (timeRangeMatches.length > 0) {
-    const match = timeRangeMatches[0];
-    result.startTime = {
-      hour: parseInt(match[1]),
-      minute: parseInt(match[2]),
-      second: match[3] ? parseInt(match[3]) : undefined,
-      isEndTime: false,
-    };
-    result.endTime = {
-      hour: parseInt(match[4]),
-      minute: parseInt(match[5]),
-      second: match[6] ? parseInt(match[6]) : undefined,
-      isEndTime: true,
-    };
-    return result;
-  }
-
-  // Extract end time (prioritize)
-  const endTimeMatch = [...line.matchAll(PATTERNS.END_TIME)][0];
-  if (endTimeMatch) {
-    result.endTime = {
-      hour: parseInt(endTimeMatch[1]),
-      minute: parseInt(endTimeMatch[2]),
-      second: endTimeMatch[3] ? parseInt(endTimeMatch[3]) : undefined,
-      isEndTime: true,
-    };
-  }
-
-  // Extract start time - first check for time tag
-  const timeTagMatches = [...line.matchAll(PATTERNS.TIME_WITH_TAG)];
-  if (timeTagMatches.length > 0) {
-    const match = timeTagMatches[0];
-    result.startTime = {
-      hour: parseInt(match[1]),
-      minute: parseInt(match[2]),
-      second: match[3] ? parseInt(match[3]) : undefined,
-      isEndTime: false,
-    };
-  } else {
-    // Check for standard time format
-    const standardTimeMatches = [...line.matchAll(PATTERNS.TIME_STANDARD)];
-    if (standardTimeMatches.length > 0) {
-      // Use the first time as start time (if it's not the same as end time)
-      const match = standardTimeMatches[0];
-      const potentialStartTime = {
-        hour: parseInt(match[1]),
-        minute: parseInt(match[2]),
-        second: match[3] ? parseInt(match[3]) : undefined,
-        isEndTime: false,
-      };
-
-      if (
-        !result.endTime ||
-        result.endTime.hour !== potentialStartTime.hour ||
-        result.endTime.minute !== potentialStartTime.minute
-      ) {
-        result.startTime = potentialStartTime;
-      } else if (standardTimeMatches.length > 1) {
-        // If the first time was the end time, try using the second time as start time
-        const secondMatch = standardTimeMatches[1];
-        result.startTime = {
-          hour: parseInt(secondMatch[1]),
-          minute: parseInt(secondMatch[2]),
-          second: secondMatch[3] ? parseInt(secondMatch[3]) : undefined,
-          isEndTime: false,
-        };
-      }
-    }
-  }
-
-  return result;
-}
 
 /**
  * Extracts all dates from a line
@@ -234,71 +156,17 @@ export function extractDates(line: string): DateInfo[] {
 
   // Extract due dates
   const dueDateMatches = [...line.matchAll(PATTERNS.DUE_DATE)];
+
   for (const match of dueDateMatches) {
     dates.push({
-      date: match[4],
-      moment: moment(match[4], 'YYYY-MM-DD'),
-      type: 'due',
-      rawMatch: match[0],
-    });
-  }
-
-  // Extract start dates
-  const startDateMatches = [...line.matchAll(PATTERNS.START_DATE)];
-  for (const match of startDateMatches) {
-    dates.push({
       date: match[1],
       moment: moment(match[1], 'YYYY-MM-DD'),
-      type: 'start',
-      rawMatch: match[0],
-    });
-  }
-
-  // Extract scheduled dates
-  const scheduledDateMatches = [...line.matchAll(PATTERNS.SCHEDULED_DATE)];
-  for (const match of scheduledDateMatches) {
-    dates.push({
-      date: match[1],
-      moment: moment(match[1], 'YYYY-MM-DD'),
-      type: 'scheduled',
-      rawMatch: match[0],
-    });
-  }
-
-  // Extract done dates
-  const doneDateMatches = [...line.matchAll(PATTERNS.DONE_DATE)];
-  for (const match of doneDateMatches) {
-    dates.push({
-      date: match[1],
-      moment: moment(match[1], 'YYYY-MM-DD'),
-      type: 'done',
+      type: 'date',
       rawMatch: match[0],
     });
   }
 
   return dates;
-}
-
-/**
- * Extracts recurrence information from a line
- *
- * @param line The text line to parse
- * @returns Recurrence rule text if found
- */
-export function extractRecurrence(line: string): string | undefined {
-  const match = line.match(PATTERNS.RECURRENCE);
-  return match ? match[1].trim() : undefined;
-}
-
-/**
- * Extracts block link information from a line
- *
- * @param line The text line to parse
- * @returns Block link ID if found
- */
-export function extractBlockLink(line: string): string | undefined {
-  const match = line.match(PATTERNS.BLOCK_LINK);
-  return match ? match[1] : undefined;
 }
 
 /**
@@ -310,7 +178,7 @@ export function extractBlockLink(line: string): string | undefined {
  * @param blockLink Block link to remove (if present)
  * @returns Cleaned content text
  */
-export function cleanContent(content: string, dates: DateInfo[], recurrenceRule?: string, blockLink?: string): string {
+export function cleanContent(content: string, dates: DateInfo[]): string {
   let result = content;
 
   // Remove dates
@@ -319,19 +187,6 @@ export function cleanContent(content: string, dates: DateInfo[], recurrenceRule?
       result = result.replace(date.rawMatch, '');
     }
   }
-
-  // Remove recurrence
-  if (recurrenceRule) {
-    result = result.replace(`🔁${recurrenceRule}`, '');
-  }
-
-  // Remove block link
-  if (blockLink) {
-    result = result.replace(`^${blockLink}`, '');
-  }
-
-  // Remove end time markers
-  result = result.replace(/⏲\s?\d{1,2}:\d{2}(:\d{2})?/g, '');
 
   // Clean up any excess whitespace
   return result.trim();
@@ -343,11 +198,11 @@ export function cleanContent(content: string, dates: DateInfo[], recurrenceRule?
  * @param line The text line to parse
  * @returns A ParsedLine object with all extracted information
  */
-export function parseLine(line: string): ParsedLine {
+export function parseLine(line: ListEntry): ParsedLine {
   // Initialize the result object
   const result: ParsedLine = {
-    originalLine: line,
-    content: '',
+    originalLine: line.header + line.body,
+    content: line.header.length == 0 ? line.body : line.header,
     indentation: '',
     isTask: false,
     isListItem: false,
@@ -356,50 +211,9 @@ export function parseLine(line: string): ParsedLine {
     hasRecurrence: false,
   };
 
-  // Check if it's a task
-  const taskMatch = line.match(PATTERNS.TASK);
-  if (taskMatch) {
-    result.isTask = true;
-    result.isListItem = true;
-    result.indentation = taskMatch[1];
-    result.listMarker = taskMatch[2];
-    result.statusCharacter = taskMatch[3];
-    result.taskStatus = STATUS_MAPPING[taskMatch[3]] || TaskStatus.Unknown;
-    result.content = taskMatch[4];
-  } else {
-    // Check if it's a list item
-    const listMatch = line.match(PATTERNS.LIST_ITEM);
-    if (listMatch) {
-      result.isListItem = true;
-      result.indentation = listMatch[1];
-      result.listMarker = listMatch[2];
-      result.content = listMatch[3];
-      result.taskStatus = TaskStatus.NotATask;
-    } else {
-      // It's a regular line
-      result.content = line;
-      result.taskStatus = TaskStatus.NotATask;
-    }
-  }
-
-  // Extract times
-  const times = extractTimes(result.content);
-  result.startTime = times.startTime;
-  result.endTime = times.endTime;
-
   // Extract dates
-  result.dates = extractDates(result.content);
-
-  // Extract recurrence
-  const recurrenceRule = extractRecurrence(result.content);
-  result.hasRecurrence = !!recurrenceRule;
-  result.recurrenceRule = recurrenceRule;
-
-  // Extract block link
-  result.blockLink = extractBlockLink(result.content);
-
-  // Clean content by removing metadata markers
-  result.content = cleanContent(result.content, result.dates, result.recurrenceRule, result.blockLink);
+  result.dates = extractDates(line.body);
+  result.content = cleanContent(result.content, result.dates);
 
   return result;
 }
@@ -436,6 +250,8 @@ export function lineContainsTime(line: string): boolean {
   return (
     PATTERNS.TIME_STANDARD.test(line) ||
     PATTERNS.TIME_WITH_TAG.test(line) ||
+    PATTERNS.DUE_DATE.test(line) ||
+    PATTERNS._DUE_DATE.test(line) ||
     PATTERNS.END_TIME.test(line) ||
     PATTERNS.TASK.test(line)
   );
@@ -449,157 +265,27 @@ export function lineContainsTime(line: string): boolean {
  * @param lineIndex The index of the line in the file (for ID generation)
  * @returns An event object compatible with full calendar
  */
-export function convertToEvent(
-  parsedLine: ParsedLine,
-  defaultDate: moment.Moment,
-  lineIndex: number,
-  path: string,
-): Model.Event | null {
-  // Determine if it's a task
-  const isTask = parsedLine.isTask;
-
-  // Check if there's time information
-  let hasTimeInfo = parsedLine.startTime !== undefined;
-  const hasEndTimeOnly = !parsedLine.startTime && !!parsedLine.endTime;
-
-  // Handle case where only end time is provided (⏲)
-  if (hasEndTimeOnly && parsedLine.endTime) {
-    hasTimeInfo = true;
-  }
-
+export function convertToEvent(parsedLine: ParsedLine, lineIndex: number, path: string): Model.Event | null {
   // Check if there's due date information
-  const hasDueDate = parsedLine.dates.some((d) => d.type === 'due');
-  const hasStartDate = parsedLine.dates.some((d) => d.type === 'start');
+  const hasDate = parsedLine.dates.some((d) => d.type === 'date');
 
-  // If it's not a task and has no time information and no due date, skip it
-  if (!isTask && !hasTimeInfo && !hasDueDate) {
+  if (!hasDate) {
     return null;
   }
 
   // Determine the start date and end date
-  let startDate = defaultDate.clone();
-  let endDate = defaultDate.clone();
-  let dueDate: moment.Moment | undefined;
-
-  // Extract dates if available
-  for (const date of parsedLine.dates) {
-    if (date.type === 'due') {
-      dueDate = date.moment.clone();
-      endDate = date.moment.clone();
-    } else if (date.type === 'start') {
-      startDate = date.moment.clone();
-    }
-  }
+  let startDate = parsedLine.dates[0].moment.clone();
+  let endDate = parsedLine.dates[0].moment.clone();
+  let dueDate = parsedLine.dates[0].moment.clone();
 
   // For tasks without time information but with due date, handle as all-day
-  let allDay = false;
-
-  if (isTask && !hasTimeInfo) {
-    allDay = true;
-
-    // If task has due date but no start date, set startDate to dueDate
-    if (dueDate && !hasStartDate) {
-      startDate = dueDate.clone();
-    }
-  } else if (hasTimeInfo) {
-    // Set start time
-    startDate.hour(parsedLine.startTime!.hour);
-    startDate.minute(parsedLine.startTime!.minute);
-    startDate.second(parsedLine.startTime!.second || 0);
-
-    // Set end time if available, otherwise default to start time + 30 min
-    if (parsedLine.endTime) {
-      endDate.hour(parsedLine.endTime.hour);
-      endDate.minute(parsedLine.endTime.minute);
-      endDate.second(parsedLine.endTime.second || 0);
-    } else {
-      // Default duration: 30 minutes
-      endDate = startDate.clone().add(30, 'minutes');
-    }
-
-    // If due date was used, ensure it includes time
-    if (hasDueDate) {
-      if (!parsedLine.endTime) {
-        // If no end time was specified, keep the same time as start
-        endDate.hour(parsedLine.startTime!.hour);
-        endDate.minute(parsedLine.startTime!.minute);
-        endDate.second(parsedLine.startTime!.second || 0);
-      }
-    }
-  }
+  let allDay = true;
 
   // Generate unique ID
   const id = `${startDate.format('YYYYMMDDHHmm')}00${lineIndex}`;
 
   // Determine event type
   let eventType = 'default';
-  if (parsedLine.isTask) {
-    // Map task status to event type
-    switch (parsedLine.taskStatus) {
-      case TaskStatus.Todo:
-        eventType = 'TASK-TODO';
-        break;
-      case TaskStatus.Done:
-        eventType = 'TASK-DONE';
-        break;
-      case TaskStatus.Cancelled:
-        eventType = 'TASK-CANCELLED';
-        break;
-      case TaskStatus.Forwarded:
-        eventType = 'TASK-FORWARDED';
-        break;
-      case TaskStatus.Deferred:
-        eventType = 'TASK-DEFERRED';
-        break;
-      case TaskStatus.InProgress:
-        eventType = 'TASK-IN_PROGRESS';
-        break;
-      case TaskStatus.Question:
-        eventType = 'TASK-QUESTION';
-        break;
-      case TaskStatus.Add:
-        eventType = 'TASK-ADD';
-        break;
-      case TaskStatus.Reviewed:
-        eventType = 'TASK-REVIEWED';
-        break;
-      case TaskStatus.Important:
-        eventType = 'TASK-IMPORTANT';
-        break;
-      case TaskStatus.Info:
-        eventType = 'TASK-INFO';
-        break;
-      case TaskStatus.Bookmark:
-        eventType = 'TASK-BOOKMARK';
-        break;
-      case TaskStatus.Pro:
-        eventType = 'TASK-PRO';
-        break;
-      case TaskStatus.Con:
-        eventType = 'TASK-CON';
-        break;
-      case TaskStatus.Brainstorming:
-        eventType = 'TASK-BRAINSTORMING';
-        break;
-      case TaskStatus.Example:
-        eventType = 'TASK-EXAMPLE';
-        break;
-      case TaskStatus.Quote:
-        eventType = 'TASK-QUOTE';
-        break;
-      case TaskStatus.Note:
-        eventType = 'TASK-NOTE';
-        break;
-      case TaskStatus.Win:
-        eventType = 'TASK-WIN';
-        break;
-      case TaskStatus.Lose:
-        eventType = 'TASK-LOSE';
-        break;
-      default:
-        eventType = 'default';
-    }
-  }
 
   // Create event object
   const event: Model.Event = {
@@ -611,11 +297,6 @@ export function convertToEvent(
     eventType,
     path,
   };
-
-  // Add optional fields if available
-  if (parsedLine.recurrenceRule) {
-    event.recurrenceRule = parsedLine.recurrenceRule;
-  }
 
   if (parsedLine.blockLink) {
     event.blockLink = parsedLine.blockLink;

@@ -6,7 +6,7 @@ import {deleteForever} from '@/obComponents/deleteEvent';
 import fileService from '@/services/fileService';
 import {parseEventInfoFromLine, lineContainsEvent} from '@/utils/fileParser';
 import {App, TFile, moment} from 'obsidian';
-import {getEvents, getEventsFromDailyNote} from '@/obComponents/getEvents';
+import {getEvents, getEventsFromFile} from '@/obComponents/getEvents';
 import {hideEvent} from '@/obComponents/hideEvent';
 
 /**
@@ -361,7 +361,7 @@ class EventService {
     try {
       // Get events specific to this file
       const newEvents: Model.Event[] = [];
-      await getEventsFromDailyNote(file, newEvents);
+      await getEventsFromFile(file, newEvents);
 
       if (!Array.isArray(newEvents)) {
         return [];

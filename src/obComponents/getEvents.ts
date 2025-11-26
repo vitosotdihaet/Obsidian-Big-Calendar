@@ -1,112 +1,95 @@
-import {TFolder, TFile, Notice, App} from 'obsidian';
-import {getAllDailyNotes, getDailyNoteSettings, getDateFromFile} from 'obsidian-daily-notes-interface';
+import {TFile, Notice, App} from 'obsidian';
+import {getDailyNoteSettings} from 'obsidian-daily-notes-interface';
 import {getAllLinesFromFile} from '@/utils/fileParser';
 import {fileService, globalService, locationService} from '@/services';
 import {BigCalendarSettings} from '@/setting';
 import {t} from '@/translations/helper';
-import {parseLine, lineContainsParseBelowToken, lineContainsTime, convertToEvent} from './parser';
+import {parseLine, ListEntry, convertToEvent} from './parser';
 
-export class DailyNotesFolderMissingError extends Error {}
-
-export async function getRemainingEvents(note: TFile): Promise<number> {
+export async function getEventsFromFile(note: TFile | null, events: Model.Event[]): Promise<Model.Event[]> {
   return await safeExecute(async () => {
     if (!note) {
-      return 0;
+      return [];
     }
 
     const {vault} = fileService.getState().app;
-    const settings = globalService.getState().pluginSetting;
     const fileContents = await vault.read(note);
     const fileLines = getAllLinesFromFile(fileContents);
-
-    // Find the parse below token
-    const processHeaderIndex = fileLines.findIndex((line) => lineContainsParseBelowToken(line, settings));
-
-    // If the token is not found, return 0
-    if (processHeaderIndex === -1) {
-      return 0;
-    }
-
-    // Count lines with time information
-    let count = 0;
-    for (let i = processHeaderIndex === 0 ? 0 : processHeaderIndex + 1; i < fileLines.length; i++) {
-      const line = fileLines[i];
-      // Stop counting if we hit a new heading
-      if (/^#{1,} /g.test(line) && !(settings.ProcessEntriesBelow.trim() === '')) {
-        break;
-      }
-
-      if (lineContainsTime(line)) {
-        count++;
-      }
-    }
-
-    return count;
-  }, 'Failed to get remaining events');
-}
-
-export async function getEventsFromDailyNote(
-  dailyNote: TFile | null,
-  dailyEvents: Model.Event[],
-): Promise<Model.Event[]> {
-  return await safeExecute(async () => {
-    if (!dailyNote) {
-      return [];
-    }
-
-    const {vault} = fileService.getState().app;
-    const settings = globalService.getState().pluginSetting;
-    const eventCount = await getRemainingEvents(dailyNote);
-
-    if (!eventCount) {
-      return [];
-    }
-
-    const fileContents = await vault.read(dailyNote);
-    const fileLines = getAllLinesFromFile(fileContents);
-    const startDate = getDateFromFile(dailyNote, 'day');
     const result: Model.Event[] = [];
 
-    // Find the parse below token
-    const processHeaderIndex = fileLines.findIndex((line) => lineContainsParseBelowToken(line, settings));
-
-    // If the token is not found, return empty array
-    if (processHeaderIndex === -1) {
-      return [];
-    }
-
-    // Process lines after the parse below token
-    let currentIndex = processHeaderIndex === 0 ? 0 : processHeaderIndex + 1;
+    let currentIndex = 0;
 
     while (currentIndex < fileLines.length) {
       const line = fileLines[currentIndex];
 
-      // Stop processing if we hit a new heading
-      if (/^#{1,} /g.test(line) && !(settings.ProcessEntriesBelow.trim() === '')) {
-        break;
-      }
+      // Check if this is a list entry (starts with - [ ] or - [x])
+      if (line.match(/^\s*-\s+\[.\]/)) {
+        // This is a list entry, collect the header and body
+        const listEntry: ListEntry = {
+          header: '',
+          body: '',
+        };
 
-      // Parse the line
-      const parsedLine = parseLine(line);
+        // Extract header from the current line (remove the checkbox part)
+        listEntry.header = line.replace(/^\s*-\s+\[.\]\s*/, '').trim();
 
-      // Check if line has time information or is a task
-      if (lineContainsTime(line)) {
-        // Convert to event - tasks without time info will be treated as all-day events
-        const event = convertToEvent(parsedLine, startDate, currentIndex, dailyNote.path);
+        // Collect body from subsequent indented lines
+        let bodyLines = [];
+        let nextIndex = currentIndex + 1;
 
-        if (event) {
-          result.push(event);
-          if (dailyEvents) {
-            dailyEvents.push(event);
-          }
+        while (
+          nextIndex < fileLines.length &&
+          fileLines[nextIndex].match(/^\s+/) &&
+          !fileLines[nextIndex].match(/^\s*-\s+\[.\]/)
+        ) {
+          bodyLines.push(fileLines[nextIndex].trim());
+          nextIndex++;
         }
-      }
 
-      currentIndex++;
+        listEntry.body = bodyLines.join('\n');
+
+        // Parse the list entry struct instead of just the line
+        const parsedLine = parseLine(listEntry);
+
+        try {
+          // Convert to event - tasks without time info will be treated as all-day events
+          const event = convertToEvent(parsedLine, currentIndex, note.path);
+
+          if (event) {
+            result.push(event);
+            if (events) {
+              events.push(event);
+            }
+          }
+        } catch (error) {
+          new Notice('Got error when converting list to event: ' + error);
+        }
+
+        // Skip the body lines we've already processed
+        currentIndex = nextIndex;
+      } else {
+        // Not a list entry, process as before
+        const parsedLine = parseLine({header: '', body: line});
+
+        try {
+          const event = convertToEvent(parsedLine, currentIndex, note.path);
+
+          if (event) {
+            result.push(event);
+            if (events) {
+              events.push(event);
+            }
+          }
+        } catch (error) {
+          new Notice('Got error when converting line to event: ' + error);
+        }
+
+        currentIndex++;
+      }
     }
 
     return result;
-  }, 'Failed to get events from daily note');
+  }, 'Failed to get events from note ' + note);
 }
 
 // Function to check if the file metadata matches the filter criteria
@@ -190,40 +173,16 @@ export async function getEvents(app: App): Promise<Model.Event[]> {
 
     if (!app) return [];
 
-    const dailyNotesFolder = app.vault.getFolderByPath(folder) as TFolder;
-    if (!dailyNotesFolder) {
-      new Notice(t('Your daily notes folder is not set correctly. Please check your settings.'));
-      return [];
-    }
+    // Get all notes
+    const allFiles = app.vault.getMarkdownFiles();
 
-    // Get all daily notes
-    const dailyNotes = getAllDailyNotes();
-
-    // Only filter files if metadata filters are applied
-    const needsMetadataFiltering =
-      (filter.metadataKeys && filter.metadataKeys.length > 0) ||
-      (filter.metadataValues && Object.keys(filter.metadataValues).length > 0);
-
-    // Process each daily note
-    for (const key in dailyNotes) {
-      if (dailyNotes[key] instanceof TFile) {
-        const file = dailyNotes[key] as TFile;
-
-        // Apply metadata filtering if needed
-        if (needsMetadataFiltering) {
-          const hasMatchingMetadata = await fileHasMatchingMetadata(
-            file,
-            filter.metadataKeys || [],
-            filter.metadataValues || {},
-          );
-
-          if (!hasMatchingMetadata) {
-            continue; // Skip this file
-          }
-        }
+    // Process each note
+    for (const key in allFiles) {
+      if (allFiles[key] instanceof TFile) {
+        const file = allFiles[key] as TFile;
 
         // Get events from the file
-        const events = await getEventsFromDailyNote(file, []);
+        const events = await getEventsFromFile(file, []);
         allEvents.push(...events);
       }
     }
